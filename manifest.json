@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "SIMIL CAIXA - Fotos em Lote",
+  "version": "1.0.1",
+  "description": "Seleciona varias fotos e anexa uma por uma na aba Fotos do SIMIL.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://simil.caixa.gov.br/*",
+        "https://www.simil.caixa.gov.br/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
