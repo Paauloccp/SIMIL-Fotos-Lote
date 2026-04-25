@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SIMIL CAIXA - Fotos em Lote",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Seleciona varias fotos e anexa uma por uma na aba Fotos do SIMIL.",
   "content_scripts": [
     {

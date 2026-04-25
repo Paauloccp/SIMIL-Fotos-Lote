@@ -443,6 +443,29 @@
           color: #657581;
         }
 
+        .${EXT}-reorder {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 5px;
+          margin-top: 7px;
+        }
+
+        .${EXT}-moveBtn {
+          border: 1px solid #c7d3da;
+          border-radius: 5px;
+          background: #fff;
+          color: #2f4352;
+          cursor: pointer;
+          font: 700 11px Arial, sans-serif;
+          padding: 4px 6px;
+          min-height: 24px;
+        }
+
+        .${EXT}-moveBtn:disabled {
+          opacity: .45;
+          cursor: not-allowed;
+        }
+
         .${EXT}-status {
           display: inline-flex;
           justify-content: center;
@@ -591,6 +614,16 @@
       return btn;
     };
 
+    const moveItem = (items, fromIndex, toIndex) => {
+      if (fromIndex === toIndex) return false;
+      if (fromIndex < 0 || fromIndex >= items.length) return false;
+      if (toIndex < 0 || toIndex >= items.length) return false;
+
+      const [item] = items.splice(fromIndex, 1);
+      items.splice(toIndex, 0, item);
+      return true;
+    };
+
     const closeModal = () => {
       document.getElementById(MODAL_ID)?.remove();
     };
@@ -678,7 +711,7 @@
 
       const notice = document.createElement('p');
       notice.className = `${EXT}-notice`;
-      notice.textContent = 'Preencha a referencia e a descricao. Depois a extensao vai anexar uma foto por vez usando o botao Adicionar do SIMIL.';
+      notice.textContent = 'Organize as fotos na ordem exigida pela CAIXA, preencha a referencia e a descricao. Depois a extensao vai anexar uma foto por vez usando o botao Adicionar do SIMIL.';
       body.appendChild(notice);
 
       const toolbar = document.createElement('div');
@@ -736,6 +769,29 @@
         meta.className = `${EXT}-meta`;
         meta.textContent = `${Math.max(1, Math.round(item.size / 1024))} KB`;
         name.appendChild(meta);
+
+        const reorder = document.createElement('div');
+        reorder.className = `${EXT}-reorder`;
+
+        const addMoveButton = (text, targetIndex) => {
+          const moveBtn = document.createElement('button');
+          moveBtn.type = 'button';
+          moveBtn.className = `${EXT}-moveBtn`;
+          moveBtn.textContent = text;
+          moveBtn.disabled = targetIndex < 0 || targetIndex >= batch.items.length || targetIndex === index;
+          moveBtn.addEventListener('click', () => {
+            if (moveItem(batch.items, index, targetIndex)) {
+              renderDraftModal(batch, filesById, referenceOptions);
+            }
+          });
+          reorder.appendChild(moveBtn);
+        };
+
+        addMoveButton('Primeira', 0);
+        addMoveButton('Subir', index - 1);
+        addMoveButton('Descer', index + 1);
+        addMoveButton('Ultima', batch.items.length - 1);
+        name.appendChild(reorder);
         row.appendChild(name);
 
         const refWrap = document.createElement('div');
