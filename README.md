@@ -1,6 +1,6 @@
-# SIMIL CAIXA - Fotos em Lote
+# SIMIL CAIXA - Anexos em Lote
 
-Extensao para anexar varias fotos na aba **Fotos** do SIMIL.
+Extensao para anexar varias fotos na aba **Fotos** e varios documentos na aba **Doc./Finalizacao** do SIMIL.
 
 ## Como instalar
 
@@ -11,6 +11,8 @@ Extensao para anexar varias fotos na aba **Fotos** do SIMIL.
 
 ## Como usar
 
+### Fotos
+
 1. Abra o laudo no SIMIL e entre na aba **Fotos**.
 2. Clique em **Anexar em Lote**.
 3. Selecione ate 12 imagens.
@@ -19,3 +21,15 @@ Extensao para anexar varias fotos na aba **Fotos** do SIMIL.
 6. Clique em **Enviar fotos**.
 
 A extensao envia as fotos uma por uma usando o botao original **Adicionar** do SIMIL. Se a pagina recarregar entre uma foto e outra, a fila temporaria e retomada automaticamente.
+
+### Documentos
+
+1. Abra o laudo no SIMIL e entre na aba **Doc./Finalizacao**.
+2. Clique em **Relacionar em Lote**.
+3. Selecione os documentos.
+4. Reordene a fila, se necessario.
+5. Escolha o tipo de documento em **Relacao Geral**.
+6. Preencha **Descricao do tipo** apenas para **Outros, Vide Inform. Complem.**.
+7. Clique em **Enviar documentos**.
+
+A extensao relaciona os documentos um por um usando o botao original **Relacionar** do SIMIL.

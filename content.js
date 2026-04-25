@@ -11,16 +11,21 @@
     const EXT = 'similFotosLote';
     const BTN_ID = `${EXT}Btn`;
     const PICKER_ID = `${EXT}Picker`;
+    const DOC_BTN_ID = `${EXT}DocsBtn`;
+    const DOC_PICKER_ID = `${EXT}DocsPicker`;
     const TOAST_ID = `${EXT}Toast`;
     const MODAL_ID = `${EXT}Modal`;
     const STYLE_ID = `${EXT}Style`;
     const DB_NAME = `${EXT}Db`;
     const DB_VERSION = 1;
     const STATE_KEY = 'activeBatch';
+    const DOC_STATE_KEY = 'activeDocsBatch';
     const MAX_FOTOS = 12;
 
     let processing = false;
+    let docsProcessing = false;
     let resumeTimer = null;
+    let docsResumeTimer = null;
     let dbPromise = null;
 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -150,20 +155,37 @@
       await txDone(tx);
     };
 
-    const saveBatch = (batch) => dbPut('state', { key: STATE_KEY, batch });
+    const saveBatchByKey = (key, batch) => dbPut('state', { key, batch });
 
-    const loadBatch = async () => {
-      const record = await dbGet('state', STATE_KEY);
+    const loadBatchByKey = async (key) => {
+      const record = await dbGet('state', key);
       return record?.batch || null;
     };
 
-    const clearBatch = async () => {
+    const saveBatch = (batch) => saveBatchByKey(STATE_KEY, batch);
+
+    const loadBatch = async () => {
+      return loadBatchByKey(STATE_KEY);
+    };
+
+    const saveDocsBatch = (batch) => saveBatchByKey(DOC_STATE_KEY, batch);
+
+    const loadDocsBatch = async () => {
+      return loadBatchByKey(DOC_STATE_KEY);
+    };
+
+    const clearAllBatches = async () => {
       const db = await openDb();
       const tx = db.transaction(['state', 'files'], 'readwrite');
       tx.objectStore('state').delete(STATE_KEY);
+      tx.objectStore('state').delete(DOC_STATE_KEY);
       tx.objectStore('files').clear();
       await txDone(tx);
     };
+
+    const clearBatch = () => clearAllBatches();
+
+    const clearDocsBatch = () => clearAllBatches();
 
     const storeFiles = async (filesById) => {
       const db = await openDb();
@@ -200,6 +222,26 @@
       const byText = candidates.find(el => {
         const txt = normalize(el.textContent);
         return txt.includes('referencia foto') && txt.includes('descricao foto') && txt.includes('foto');
+      });
+
+      return byText || null;
+    };
+
+    const findDocsPanel = () => {
+      const direct = document.getElementById('formCadastro-tab-documento');
+      if (direct) return direct;
+
+      const candidates = [
+        ...document.querySelectorAll('[id*="tab-documento"], [id*="tabDocumento"], .ui-tabs-panel, fieldset, form')
+      ];
+
+      const byText = candidates.find(el => {
+        const txt = normalize(el.textContent);
+        return (
+          txt.includes('relacao geral') &&
+          txt.includes('anexo') &&
+          (txt.includes('relacionar') || txt.includes('descricao documento'))
+        );
       });
 
       return byText || null;
@@ -259,6 +301,24 @@
         || null;
     };
 
+    const findDocTypeSelect = (root = findDocsPanel()) => {
+      if (!root) return null;
+      return findFieldByLabel(root, 'Relacao Geral', 'select')
+        || [...root.querySelectorAll('select')]
+          .filter(el => !el.disabled && isVisible(el))
+          .sort((a, b) => (b.size || 0) - (a.size || 0))[0]
+        || null;
+    };
+
+    const findDocFileInput = (root = findDocsPanel()) => {
+      if (!root) return null;
+      const byLabel = findFieldByLabel(root, 'Anexo', 'input[type="file"]');
+      if (byLabel) return byLabel;
+      return [...root.querySelectorAll('input[type="file"]')]
+        .find(el => !el.id?.startsWith(EXT) && !el.disabled)
+        || null;
+    };
+
     const looksLikeAddControl = (el) => {
       const txt = normalize(el.textContent || el.value || el.getAttribute('title') || '');
       const cls = String(el.className || '');
@@ -286,6 +346,16 @@
         })[0] || null;
     };
 
+    const findRelateButton = (root = findDocsPanel()) => {
+      if (!root) return null;
+      return [...root.querySelectorAll('button, a, span, input[type="button"], input[type="submit"]')]
+        .filter(el => {
+          if (el.id?.startsWith(EXT) || !isVisible(el)) return false;
+          const txt = normalize(el.textContent || el.value || el.getAttribute('title') || '');
+          return txt === 'relacionar';
+        })[0] || null;
+    };
+
     const isDisabledButton = (el) =>
       !el ||
       el.disabled ||
@@ -301,6 +371,22 @@
           text: (opt.textContent || '').trim()
         }))
         .filter(opt => opt.value && normalize(opt.text) && !normalize(opt.text).includes('selecione'));
+    };
+
+    const readDocTypeOptions = () => {
+      const select = findDocTypeSelect();
+      if (!select) return [];
+      return [...select.options]
+        .map(opt => ({
+          value: opt.value,
+          text: (opt.textContent || '').trim()
+        }))
+        .filter(opt => opt.value && normalize(opt.text) && !normalize(opt.text).includes('selecione'));
+    };
+
+    const needsDocComplement = (text) => {
+      const normalized = normalize(text);
+      return normalized.includes('outros') && normalized.includes('inform') && normalized.includes('complem');
     };
 
     const countExistingPhotos = () => {
@@ -655,6 +741,13 @@
       return 'Pendente';
     };
 
+    const docStatusLabel = (status) => {
+      if (status === 'done') return 'Relacionado';
+      if (status === 'submitting') return 'Relacionando';
+      if (status === 'error') return 'Erro';
+      return 'Pendente';
+    };
+
     const getProgress = (batch) => {
       const total = batch.items.length;
       const done = batch.items.filter(item => item.status === 'done').length;
@@ -665,7 +758,7 @@
       };
     };
 
-    const createBatchDialog = (batch, subtitle) => {
+    const createBatchDialog = (batch, subtitle, title = 'Anexar fotos em lote') => {
       ensureStyles();
       closeModal();
 
@@ -679,7 +772,7 @@
       header.className = `${EXT}-header`;
       header.innerHTML = `
         <div>
-          <h2>Anexar fotos em lote</h2>
+          <h2>${title}</h2>
           <small>${subtitle || ''}</small>
         </div>
       `;
@@ -1015,6 +1108,316 @@
       footer.appendChild(actions);
     };
 
+    const renderDocsDraftModal = (batch, filesById, docOptions) => {
+      const { body, footer } = createBatchDialog(
+        batch,
+        `${batch.items.length} documento(s) selecionado(s)`,
+        'Relacionar documentos em lote'
+      );
+
+      const notice = document.createElement('p');
+      notice.className = `${EXT}-notice`;
+      notice.textContent = 'Organize os documentos, escolha o tipo de cada anexo e envie. O campo Descricao do tipo so e usado quando o tipo for Outros, Vide Inform. Complem.';
+      body.appendChild(notice);
+
+      const toolbar = document.createElement('div');
+      toolbar.className = `${EXT}-toolbar`;
+
+      const allTypeWrap = document.createElement('div');
+      allTypeWrap.className = `${EXT}-field`;
+      allTypeWrap.innerHTML = '<label>Tipo para todos</label>';
+      const allType = buildReferenceSelect(docOptions, '');
+      allTypeWrap.appendChild(allType);
+      toolbar.appendChild(allTypeWrap);
+
+      const applyType = createButton('Aplicar', 'orange');
+      applyType.addEventListener('click', () => {
+        const value = allType.value;
+        const text = allType.selectedOptions[0]?.textContent?.trim() || '';
+        if (!value) return;
+        batch.items.forEach(item => {
+          item.documentValue = value;
+          item.documentText = text;
+          if (!needsDocComplement(text)) item.complement = '';
+        });
+        renderDocsDraftModal(batch, filesById, docOptions);
+      });
+      toolbar.appendChild(applyType);
+
+      body.appendChild(toolbar);
+
+      const items = document.createElement('div');
+      items.className = `${EXT}-items`;
+
+      batch.items.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.className = `${EXT}-item`;
+
+        const icon = document.createElement('div');
+        icon.className = `${EXT}-thumb`;
+        icon.style.display = 'flex';
+        icon.style.alignItems = 'center';
+        icon.style.justifyContent = 'center';
+        icon.style.color = '#60717d';
+        icon.style.font = '700 12px Arial, sans-serif';
+        icon.textContent = 'DOC';
+        row.appendChild(icon);
+
+        const name = document.createElement('div');
+        name.className = `${EXT}-name`;
+        name.textContent = `${index + 1}. ${item.name}`;
+        const meta = document.createElement('span');
+        meta.className = `${EXT}-meta`;
+        meta.textContent = `${Math.max(1, Math.round(item.size / 1024))} KB`;
+        name.appendChild(meta);
+
+        const reorder = document.createElement('div');
+        reorder.className = `${EXT}-reorder`;
+
+        const addMoveButton = (text, targetIndex) => {
+          const moveBtn = document.createElement('button');
+          moveBtn.type = 'button';
+          moveBtn.className = `${EXT}-moveBtn`;
+          moveBtn.textContent = text;
+          moveBtn.disabled = targetIndex < 0 || targetIndex >= batch.items.length || targetIndex === index;
+          moveBtn.addEventListener('click', () => {
+            if (moveItem(batch.items, index, targetIndex)) {
+              renderDocsDraftModal(batch, filesById, docOptions);
+            }
+          });
+          reorder.appendChild(moveBtn);
+        };
+
+        addMoveButton('Primeiro', 0);
+        addMoveButton('Subir', index - 1);
+        addMoveButton('Descer', index + 1);
+        addMoveButton('Ultimo', batch.items.length - 1);
+        name.appendChild(reorder);
+        row.appendChild(name);
+
+        const typeWrap = document.createElement('div');
+        typeWrap.className = `${EXT}-field`;
+        typeWrap.innerHTML = '<label>Tipo de documento</label>';
+        const typeSelect = buildReferenceSelect(docOptions, item.documentValue);
+        typeSelect.addEventListener('change', () => {
+          item.documentValue = typeSelect.value;
+          item.documentText = typeSelect.selectedOptions[0]?.textContent?.trim() || '';
+          if (!needsDocComplement(item.documentText)) item.complement = '';
+          renderDocsDraftModal(batch, filesById, docOptions);
+        });
+        typeWrap.appendChild(typeSelect);
+        row.appendChild(typeWrap);
+
+        const complementWrap = document.createElement('div');
+        complementWrap.className = `${EXT}-field`;
+        complementWrap.innerHTML = '<label>Descricao do tipo</label>';
+        const complement = document.createElement('input');
+        complement.type = 'text';
+        complement.value = item.complement || '';
+        complement.placeholder = 'Obrigatorio para Outros';
+        complement.disabled = !needsDocComplement(item.documentText);
+        complement.addEventListener('input', () => {
+          item.complement = complement.value.trim();
+        });
+        complementWrap.appendChild(complement);
+        row.appendChild(complementWrap);
+
+        const status = document.createElement('span');
+        status.className = `${EXT}-status`;
+        status.textContent = 'Pendente';
+        row.appendChild(status);
+
+        items.appendChild(row);
+      });
+
+      body.appendChild(items);
+
+      const progress = getProgress(batch);
+      const progressWrap = document.createElement('div');
+      progressWrap.className = `${EXT}-progressWrap`;
+      progressWrap.innerHTML = `
+        <div class="${EXT}-progressText">Pronto para relacionar ${progress.total} documento(s).</div>
+        <div class="${EXT}-progress"><span style="--pct: 0%"></span></div>
+      `;
+
+      const actions = document.createElement('div');
+      actions.className = `${EXT}-actions`;
+
+      const cancel = createButton('Cancelar');
+      cancel.addEventListener('click', closeModal);
+
+      const start = createButton('Enviar documentos', 'primary');
+      start.addEventListener('click', async () => {
+        const missingType = batch.items.filter(item => !item.documentValue);
+        if (missingType.length) {
+          toast(`Escolha o tipo de ${missingType.length} documento(s).`);
+          return;
+        }
+
+        const missingComplement = batch.items.filter(item => needsDocComplement(item.documentText) && !item.complement);
+        if (missingComplement.length) {
+          toast(`Preencha a descricao do tipo em ${missingComplement.length} documento(s) marcados como Outros.`);
+          return;
+        }
+
+        start.disabled = true;
+        cancel.disabled = true;
+
+        batch.running = true;
+        batch.startedAt = Date.now();
+        batch.items.forEach(item => {
+          item.status = 'pending';
+          item.error = null;
+        });
+
+        try {
+          await clearDocsBatch();
+          await storeFiles(filesById);
+          await saveDocsBatch(stripPreviewUrls(batch));
+          renderSavedDocsModal(stripPreviewUrls(batch));
+          scheduleDocsResume(300);
+        } catch (err) {
+          console.error('[SIMIL-DOCS-LOTE] erro ao salvar lote:', err);
+          start.disabled = false;
+          cancel.disabled = false;
+          toast(`Erro ao preparar os documentos: ${err.message || err}`);
+        }
+      });
+
+      actions.appendChild(cancel);
+      actions.appendChild(start);
+      footer.appendChild(progressWrap);
+      footer.appendChild(actions);
+    };
+
+    const renderSavedDocsModal = (batch) => {
+      const progress = getProgress(batch);
+      const subtitle = batch.running
+        ? `Relacionando ${progress.done}/${progress.total}`
+        : `Fila pausada: ${progress.done}/${progress.total}`;
+      const { body, footer } = createBatchDialog(batch, subtitle, 'Relacionar documentos em lote');
+
+      const notice = document.createElement('p');
+      notice.className = `${EXT}-notice`;
+      notice.textContent = batch.running
+        ? 'Mantenha a aba Doc./Finalizacao aberta. Se o SIMIL recarregar a pagina, a extensao continua do proximo item.'
+        : 'A fila esta pausada. Voce pode retomar ou limpar os arquivos temporarios.';
+      body.appendChild(notice);
+
+      const items = document.createElement('div');
+      items.className = `${EXT}-items`;
+
+      batch.items.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.className = `${EXT}-item`;
+
+        const icon = document.createElement('div');
+        icon.className = `${EXT}-thumb`;
+        icon.style.display = 'flex';
+        icon.style.alignItems = 'center';
+        icon.style.justifyContent = 'center';
+        icon.style.color = '#60717d';
+        icon.style.font = '700 12px Arial, sans-serif';
+        icon.textContent = 'DOC';
+        row.appendChild(icon);
+
+        const name = document.createElement('div');
+        name.className = `${EXT}-name`;
+        name.textContent = `${index + 1}. ${item.name}`;
+        const meta = document.createElement('span');
+        meta.className = `${EXT}-meta`;
+        meta.textContent = item.documentText || 'Sem tipo';
+        name.appendChild(meta);
+        if (item.complement) {
+          const complement = document.createElement('span');
+          complement.className = `${EXT}-meta`;
+          complement.textContent = item.complement;
+          name.appendChild(complement);
+        }
+        if (item.error) {
+          const err = document.createElement('div');
+          err.className = `${EXT}-errorText`;
+          err.textContent = item.error;
+          name.appendChild(err);
+        }
+        row.appendChild(name);
+
+        const typeWrap = document.createElement('div');
+        typeWrap.className = `${EXT}-field`;
+        typeWrap.innerHTML = '<label>Tipo de documento</label>';
+        const type = document.createElement('input');
+        type.type = 'text';
+        type.value = item.documentText || '';
+        type.disabled = true;
+        typeWrap.appendChild(type);
+        row.appendChild(typeWrap);
+
+        const complementWrap = document.createElement('div');
+        complementWrap.className = `${EXT}-field`;
+        complementWrap.innerHTML = '<label>Descricao do tipo</label>';
+        const complement = document.createElement('input');
+        complement.type = 'text';
+        complement.value = item.complement || '';
+        complement.disabled = true;
+        complementWrap.appendChild(complement);
+        row.appendChild(complementWrap);
+
+        const status = document.createElement('span');
+        status.className = `${EXT}-status ${item.status || 'pending'}`;
+        status.textContent = docStatusLabel(item.status);
+        row.appendChild(status);
+
+        items.appendChild(row);
+      });
+
+      body.appendChild(items);
+
+      const progressWrap = document.createElement('div');
+      progressWrap.className = `${EXT}-progressWrap`;
+      progressWrap.innerHTML = `
+        <div class="${EXT}-progressText">${progress.done}/${progress.total} documento(s) relacionado(s).</div>
+        <div class="${EXT}-progress"><span style="--pct: ${progress.pct}%"></span></div>
+      `;
+
+      const actions = document.createElement('div');
+      actions.className = `${EXT}-actions`;
+
+      if (!batch.running && batch.items.some(item => item.status !== 'done')) {
+        const resume = createButton('Retomar', 'primary');
+        resume.addEventListener('click', async () => {
+          batch.running = true;
+          batch.items.forEach(item => {
+            if (item.status === 'error') {
+              item.status = 'pending';
+              item.error = null;
+            }
+          });
+          await saveDocsBatch(batch);
+          renderSavedDocsModal(batch);
+          scheduleDocsResume(300);
+        });
+        actions.appendChild(resume);
+      }
+
+      if (batch.running) {
+        const continueBtn = createButton('Continuar agora', 'primary');
+        continueBtn.addEventListener('click', () => scheduleDocsResume(100));
+        actions.appendChild(continueBtn);
+      }
+
+      const clear = createButton('Limpar fila', 'danger');
+      clear.addEventListener('click', async () => {
+        if (!confirm('Limpar a fila temporaria de documentos desta extensao?')) return;
+        await clearDocsBatch();
+        closeModal();
+        toast('Fila temporaria de documentos limpa.');
+      });
+      actions.appendChild(clear);
+
+      footer.appendChild(progressWrap);
+      footer.appendChild(actions);
+    };
+
     const selectReferenceOnPage = (select, item) => {
       const options = [...select.options];
       let option = options.find(opt => opt.value === item.referenceValue);
@@ -1055,6 +1458,84 @@
       return input.files?.length === 1;
     };
 
+    const selectDocTypeOnPage = (select, item) => {
+      const options = [...select.options];
+      let option = options.find(opt => opt.value === item.documentValue);
+      if (!option && item.documentText) {
+        const wanted = normalize(item.documentText);
+        option = options.find(opt => normalize(opt.textContent) === wanted);
+      }
+      if (!option) return false;
+
+      select.focus();
+      select.value = option.value;
+      option.selected = true;
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      select.blur();
+      return true;
+    };
+
+    const findComplementDialog = () => {
+      const dialogs = [...document.querySelectorAll('.ui-dialog, .modal, [role="dialog"]')]
+        .filter(el => !el.closest(`#${MODAL_ID}`) && isVisible(el));
+
+      return dialogs.find(dialog => {
+        const txt = normalize(dialog.textContent || '');
+        const hasTextField = [...dialog.querySelectorAll('textarea, input[type="text"], input:not([type])')]
+          .some(el => !el.disabled && !el.readOnly && isVisible(el));
+        return hasTextField && (
+          txt.includes('complem') ||
+          txt.includes('outros') ||
+          txt.includes('descricao') ||
+          txt.includes('documento')
+        );
+      }) || null;
+    };
+
+    const findDialogConfirmButton = (dialog) => {
+      const buttons = [...dialog.querySelectorAll('button, a, span, input[type="button"], input[type="submit"]')]
+        .filter(el => !el.disabled && isVisible(el));
+
+      return buttons.find(el => {
+        const txt = normalize(el.textContent || el.value || el.getAttribute('title') || '');
+        return ['ok', 'salvar', 'confirmar', 'adicionar', 'continuar'].includes(txt);
+      }) || buttons.find(el => {
+        const txt = normalize(el.textContent || el.value || el.getAttribute('title') || '');
+        return !txt.includes('cancel') && !txt.includes('fechar');
+      }) || null;
+    };
+
+    const fillDocComplementDialogIfPresent = async (item, timeout = 1500) => {
+      if (!needsDocComplement(item.documentText)) return false;
+
+      const dialog = await waitFor(findComplementDialog, timeout, 120);
+      if (!dialog) return false;
+
+      const input = [...dialog.querySelectorAll('textarea, input[type="text"], input:not([type])')]
+        .find(el => !el.disabled && !el.readOnly && isVisible(el));
+
+      if (!input) {
+        throw new Error('A janela de informacao complementar abriu, mas nao encontrei o campo de descricao.');
+      }
+
+      input.focus();
+      setNativeInputValue(input, item.complement || '');
+      dispatchValueEvents(input);
+      input.blur();
+
+      const confirmButton = findDialogConfirmButton(dialog);
+      if (confirmButton) {
+        clickLikeUser(confirmButton);
+      } else {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+      }
+
+      await sleep(350);
+      return true;
+    };
+
     const detectUploadResult = (item) => {
       const pageText = normalize(document.body?.textContent || '');
       if (pageText.includes('arquivo anexado com sucesso')) {
@@ -1079,11 +1560,45 @@
       return null;
     };
 
+    const detectDocUploadResult = (item) => {
+      const pageText = normalize(document.body?.textContent || '');
+      if (
+        pageText.includes('registro gravado com sucesso') ||
+        pageText.includes('arquivo anexado com sucesso')
+      ) {
+        return { success: true };
+      }
+
+      const panel = findDocsPanel();
+      const panelText = normalize(panel?.textContent || '');
+      const docType = normalize(item.documentText);
+      const complement = normalize(item.complement);
+
+      if (docType && panelText.includes(docType) && panelText.includes('anexado')) {
+        return { success: true };
+      }
+
+      if (complement && panelText.includes(complement) && panelText.includes('anexado')) {
+        return { success: true };
+      }
+
+      const errorNode = [...document.querySelectorAll('.ui-messages-error, .ui-message-error, .alert-error, .alert-danger')]
+        .find(isVisible);
+      if (errorNode) {
+        return { error: errorNode.textContent.trim() || 'O SIMIL retornou uma mensagem de erro.' };
+      }
+
+      return null;
+    };
+
     const clearStaleSuccessMessages = () => {
       [...document.querySelectorAll('div, li, span')]
         .filter(el => {
           const txt = normalize(el.textContent || '');
-          return txt.includes('arquivo anexado com sucesso') && txt.length < 180;
+          return (
+            (txt.includes('arquivo anexado com sucesso') || txt.includes('registro gravado com sucesso')) &&
+            txt.length < 180
+          );
         })
         .forEach(el => el.remove());
     };
@@ -1207,6 +1722,124 @@
       throw new Error('O envio nao foi confirmado dentro do tempo esperado.');
     };
 
+    const reconcileDocsSubmitting = async (batch) => {
+      const submitting = batch.items.find(item => item.status === 'submitting');
+      if (!submitting) return batch;
+
+      const result = detectDocUploadResult(submitting);
+      if (result?.success) {
+        submitting.status = 'done';
+        submitting.error = null;
+        submitting.doneAt = Date.now();
+        await saveDocsBatch(batch);
+        return batch;
+      }
+
+      if (result?.error) {
+        submitting.status = 'error';
+        submitting.error = result.error;
+        batch.running = false;
+        await saveDocsBatch(batch);
+        return batch;
+      }
+
+      submitting.status = 'error';
+      submitting.error = 'Nao consegui confirmar se este documento foi relacionado depois do recarregamento.';
+      batch.running = false;
+      await saveDocsBatch(batch);
+      return batch;
+    };
+
+    const completeDocsBatch = async (batch) => {
+      const total = batch.items.length;
+      await clearDocsBatch();
+      closeModal();
+      toast(`Lote concluido. ${total} documento(s) relacionado(s).`, 5200);
+    };
+
+    const pauseDocsBatchWithError = async (batch, item, message) => {
+      item.status = 'error';
+      item.error = message;
+      batch.running = false;
+      await saveDocsBatch(batch);
+      renderSavedDocsModal(batch);
+      toast(message, 5200);
+    };
+
+    const submitOneDocItem = async (batch, item) => {
+      const panel = await waitFor(() => {
+        const root = findDocsPanel();
+        return root && isVisible(root) ? root : null;
+      }, 6000);
+
+      if (!panel) {
+        throw new Error('Abra a aba Doc./Finalizacao do SIMIL para continuar.');
+      }
+
+      const refs = await waitFor(() => {
+        const found = {
+          select: findDocTypeSelect(panel),
+          file: findDocFileInput(panel),
+          relate: findRelateButton(panel)
+        };
+        return found.select && found.file && found.relate ? found : null;
+      }, 3000);
+
+      const select = refs?.select;
+      const fileInput = refs?.file;
+      let relateButton = refs?.relate;
+
+      if (!select) throw new Error('Nao encontrei o campo Relacao Geral.');
+      if (!fileInput) throw new Error('Nao encontrei o campo Anexo.');
+      if (!relateButton) throw new Error('Nao encontrei o botao Relacionar.');
+
+      clearStaleSuccessMessages();
+
+      if (!selectDocTypeOnPage(select, item)) {
+        throw new Error(`Tipo de documento nao encontrado no SIMIL: ${item.documentText || item.documentValue}`);
+      }
+
+      await fillDocComplementDialogIfPresent(item, 1800);
+
+      const file = await getFileForItem(item);
+      if (!attachFileOnPage(fileInput, file)) {
+        throw new Error(`Nao consegui colocar o arquivo no campo Anexo: ${item.name}`);
+      }
+
+      relateButton = await waitFor(() => {
+        const fresh = findRelateButton(findDocsPanel());
+        return fresh && !isDisabledButton(fresh) ? fresh : null;
+      }, 5000);
+
+      if (!relateButton) {
+        throw new Error('O botao Relacionar nao ficou habilitado apos selecionar o documento.');
+      }
+
+      item.status = 'submitting';
+      item.error = null;
+      item.submittedAt = Date.now();
+      await saveDocsBatch(batch);
+      renderSavedDocsModal(batch);
+
+      clickLikeUser(relateButton);
+      await fillDocComplementDialogIfPresent(item, 3500);
+
+      const result = await waitFor(() => detectDocUploadResult(item), 25000, 250);
+      if (result?.success) {
+        item.status = 'done';
+        item.error = null;
+        item.doneAt = Date.now();
+        await saveDocsBatch(batch);
+        return true;
+      }
+
+      if (result?.error) {
+        throw new Error(result.error);
+      }
+
+      throw new Error('O relacionamento do documento nao foi confirmado dentro do tempo esperado.');
+    };
+
     const processActiveBatch = async () => {
       if (processing) return;
       processing = true;
@@ -1253,6 +1886,52 @@
       }, delay);
     };
 
+    const processActiveDocsBatch = async () => {
+      if (docsProcessing) return;
+      docsProcessing = true;
+
+      try {
+        let batch = await loadDocsBatch();
+        if (!batch) return;
+
+        batch = await reconcileDocsSubmitting(batch);
+        renderSavedDocsModal(batch);
+
+        if (!batch.running) return;
+
+        const next = batch.items.find(item => item.status === 'pending' || !item.status);
+        if (!next) {
+          await completeDocsBatch(batch);
+          return;
+        }
+
+        try {
+          await submitOneDocItem(batch, next);
+        } catch (err) {
+          await pauseDocsBatchWithError(batch, next, err.message || String(err));
+          return;
+        }
+
+        const fresh = await loadDocsBatch();
+        if (fresh?.running) {
+          renderSavedDocsModal(fresh);
+          scheduleDocsResume(600);
+        }
+      } finally {
+        docsProcessing = false;
+      }
+    };
+
+    const scheduleDocsResume = (delay = 900) => {
+      clearTimeout(docsResumeTimer);
+      docsResumeTimer = setTimeout(() => {
+        processActiveDocsBatch().catch(err => {
+          console.error('[SIMIL-DOCS-LOTE] erro ao processar lote:', err);
+          toast(`Erro ao processar lote de documentos: ${err.message || err}`);
+        });
+      }, delay);
+    };
+
     const createDraftBatch = (files, referenceOptions) => {
       const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       return {
@@ -1268,6 +1947,28 @@
           referenceValue: referenceOptions.length === 1 ? referenceOptions[0].value : '',
           referenceText: referenceOptions.length === 1 ? referenceOptions[0].text : '',
           description: '',
+          status: 'pending',
+          error: null
+        }))
+      };
+    };
+
+    const createDocsDraftBatch = (files, docOptions) => {
+      const id = `docs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      return {
+        id,
+        kind: 'docs',
+        createdAt: Date.now(),
+        running: false,
+        items: files.map((file, index) => ({
+          id: `${id}-${index}`,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          lastModified: file.lastModified,
+          documentValue: docOptions.length === 1 ? docOptions[0].value : '',
+          documentText: docOptions.length === 1 ? docOptions[0].text : '',
+          complement: '',
           status: 'pending',
           error: null
         }))
@@ -1305,6 +2006,25 @@
       renderDraftModal(batch, filesById, referenceOptions);
     };
 
+    const handleSelectedDocs = async (fileList) => {
+      const files = [...fileList].filter(file => file.size > 0);
+      if (!files.length) {
+        toast('Selecione os arquivos de documento.');
+        return;
+      }
+
+      const docOptions = readDocTypeOptions();
+      if (!docOptions.length) {
+        toast('Nao consegui ler as opcoes da Relacao Geral. Abra a aba Doc./Finalizacao e tente novamente.');
+        return;
+      }
+
+      const filesById = new Map();
+      const batch = createDocsDraftBatch(files, docOptions);
+      batch.items.forEach((item, index) => filesById.set(item.id, files[index]));
+      renderDocsDraftModal(batch, filesById, docOptions);
+    };
+
     const ensurePicker = () => {
       let input = document.getElementById(PICKER_ID);
       if (input) return input;
@@ -1322,8 +2042,12 @@
         if (!files.length) return;
 
         const active = await loadBatch();
-        if (active && active.items?.some(item => item.status !== 'done')) {
-          const ok = confirm('Ja existe uma fila temporaria de fotos. Limpar essa fila e comecar outra?');
+        const activeDocs = await loadDocsBatch();
+        if (
+          active?.items?.some(item => item.status !== 'done') ||
+          activeDocs?.items?.some(item => item.status !== 'done')
+        ) {
+          const ok = confirm('Ja existe uma fila temporaria nesta extensao. Limpar essa fila e comecar outra?');
           if (!ok) return;
           await clearBatch();
         }
@@ -1338,6 +2062,43 @@
       return input;
     };
 
+    const ensureDocsPicker = () => {
+      let input = document.getElementById(DOC_PICKER_ID);
+      if (input) return input;
+
+      input = document.createElement('input');
+      input.id = DOC_PICKER_ID;
+      input.type = 'file';
+      input.accept = '.pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx,.txt,.zip,application/pdf,image/*';
+      input.multiple = true;
+      input.style.display = 'none';
+
+      input.addEventListener('change', async (event) => {
+        const files = [...(event.target.files || [])];
+        input.value = '';
+        if (!files.length) return;
+
+        const active = await loadBatch();
+        const activeDocs = await loadDocsBatch();
+        if (
+          active?.items?.some(item => item.status !== 'done') ||
+          activeDocs?.items?.some(item => item.status !== 'done')
+        ) {
+          const ok = confirm('Ja existe uma fila temporaria nesta extensao. Limpar essa fila e comecar outra?');
+          if (!ok) return;
+          await clearDocsBatch();
+        }
+
+        handleSelectedDocs(files).catch(err => {
+          console.error('[SIMIL-DOCS-LOTE] erro ao selecionar documentos:', err);
+          toast(`Erro ao selecionar documentos: ${err.message || err}`);
+        });
+      });
+
+      (document.body || document.documentElement).appendChild(input);
+      return input;
+    };
+
     const openPicker = async () => {
       const panel = findPhotoPanel();
       if (!panel || !isVisible(panel)) {
@@ -1345,6 +2106,15 @@
         return;
       }
       ensurePicker().click();
+    };
+
+    const openDocsPicker = async () => {
+      const panel = findDocsPanel();
+      if (!panel || !isVisible(panel)) {
+        toast('Abra a aba Doc./Finalizacao do SIMIL antes de selecionar os documentos.');
+        return;
+      }
+      ensureDocsPicker().click();
     };
 
     const styleInlineBatchButton = (btn) => {
@@ -1408,6 +2178,34 @@
       }
     };
 
+    const ensureDocsButton = () => {
+      const panel = findDocsPanel();
+      const existing = document.getElementById(DOC_BTN_ID);
+
+      if (!panel || !isVisible(panel)) {
+        existing?.remove();
+        return;
+      }
+
+      if (existing) return;
+
+      const btn = document.createElement('button');
+      btn.id = DOC_BTN_ID;
+      btn.type = 'button';
+      btn.textContent = 'Relacionar em Lote';
+      btn.title = 'Selecionar varios documentos e relacionar um por um';
+      btn.addEventListener('click', openDocsPicker);
+
+      const relate = findRelateButton(panel);
+      if (relate?.parentElement) {
+        styleInlineBatchButton(btn);
+        relate.insertAdjacentElement('afterend', btn);
+      } else {
+        styleFloatingBatchButton(btn);
+        (document.body || document.documentElement).appendChild(btn);
+      }
+    };
+
     const initActiveBatch = async () => {
       const batch = await loadBatch();
       if (!batch) return;
@@ -1422,14 +2220,34 @@
       if (batch.running) scheduleResume(1200);
     };
 
+    const initActiveDocsBatch = async () => {
+      const batch = await loadDocsBatch();
+      if (!batch) return;
+
+      const isOld = batch.createdAt && Date.now() - batch.createdAt > 24 * 60 * 60 * 1000;
+      if (isOld && !batch.running) {
+        await clearDocsBatch();
+        return;
+      }
+
+      renderSavedDocsModal(batch);
+      if (batch.running) scheduleDocsResume(1200);
+    };
+
     ensureBatchButton();
+    ensureDocsButton();
     ensurePicker();
+    ensureDocsPicker();
     initActiveBatch().catch(err => {
       console.error('[SIMIL-FOTOS-LOTE] erro ao inicializar lote:', err);
+    });
+    initActiveDocsBatch().catch(err => {
+      console.error('[SIMIL-DOCS-LOTE] erro ao inicializar lote:', err);
     });
 
     const obs = new MutationObserver(() => {
       ensureBatchButton();
+      ensureDocsButton();
     });
 
     obs.observe(document.documentElement, {
