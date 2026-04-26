@@ -33,3 +33,4 @@ A extensao envia as fotos uma por uma usando o botao original **Adicionar** do S
 7. Clique em **Enviar documentos**.
 
 A extensao relaciona os documentos um por um usando o botao original **Relacionar** do SIMIL.
+PDFs maiores que 1 MB sao compactados automaticamente antes de entrar na fila de envio. A compactacao recria o PDF como imagens em resolucao reduzida, entao o texto pode deixar de ser selecionavel.

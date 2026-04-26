@@ -1,17 +1,29 @@
 {
   "manifest_version": 3,
   "name": "SIMIL CAIXA - Anexos em Lote",
-  "version": "1.2.0",
-  "description": "Seleciona varias fotos ou documentos e anexa um por um no SIMIL.",
+  "version": "1.3.0",
+  "description": "Seleciona varias fotos ou documentos, compacta PDFs grandes e anexa um por um no SIMIL.",
   "content_scripts": [
     {
       "matches": [
         "https://simil.caixa.gov.br/*",
         "https://www.simil.caixa.gov.br/*"
       ],
-      "js": ["content.js"],
+      "js": ["lib/pdf-lib.min.js", "content.js"],
       "run_at": "document_idle",
       "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/pdf.min.mjs",
+        "lib/pdf.worker.min.mjs"
+      ],
+      "matches": [
+        "https://simil.caixa.gov.br/*",
+        "https://www.simil.caixa.gov.br/*"
+      ]
     }
   ]
 }

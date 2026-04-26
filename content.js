@@ -21,12 +21,21 @@
     const STATE_KEY = 'activeBatch';
     const DOC_STATE_KEY = 'activeDocsBatch';
     const MAX_FOTOS = 12;
+    const MAX_DOC_BYTES = 1024 * 1024;
+    const PDF_COMPRESSION_ATTEMPTS = [
+      { dpi: 110, quality: 0.72 },
+      { dpi: 90, quality: 0.64 },
+      { dpi: 72, quality: 0.56 },
+      { dpi: 60, quality: 0.48 },
+      { dpi: 50, quality: 0.42 }
+    ];
 
     let processing = false;
     let docsProcessing = false;
     let resumeTimer = null;
     let docsResumeTimer = null;
     let dbPromise = null;
+    let pdfjsPromise = null;
 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -44,6 +53,21 @@
         .replace(/[_-]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+
+    const formatBytes = (bytes) => {
+      const value = Number(bytes || 0);
+      if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+      if (value >= 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+      return `${value} B`;
+    };
+
+    const isPdfFile = (file) =>
+      file?.type === 'application/pdf' || /\.pdf$/i.test(file?.name || '');
+
+    const makeCompressedPdfName = (name) => {
+      const base = String(name || 'documento.pdf').replace(/\.pdf$/i, '');
+      return `${base}_compactado.pdf`;
+    };
 
     const isVisible = (el) => {
       if (!el) return false;
@@ -81,6 +105,121 @@
         await sleep(interval);
       }
       return null;
+    };
+
+    const loadPdfJs = async () => {
+      if (pdfjsPromise) return pdfjsPromise;
+
+      pdfjsPromise = import(chrome.runtime.getURL('lib/pdf.min.mjs')).then(pdfjs => {
+        if (pdfjs.GlobalWorkerOptions) {
+          pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
+        }
+        return pdfjs;
+      });
+
+      return pdfjsPromise;
+    };
+
+    const canvasToJpegBytes = (canvas, quality) =>
+      new Promise((resolve, reject) => {
+        canvas.toBlob(async (blob) => {
+          if (!blob) {
+            reject(new Error('Nao consegui gerar a imagem da pagina do PDF.'));
+            return;
+          }
+
+          resolve(new Uint8Array(await blob.arrayBuffer()));
+        }, 'image/jpeg', quality);
+      });
+
+    const renderPdfAsImagePdf = async (file, attempt) => {
+      if (!window.PDFLib?.PDFDocument) {
+        throw new Error('Biblioteca PDFLib nao foi carregada pela extensao.');
+      }
+
+      const pdfjs = await loadPdfJs();
+      const sourceBytes = new Uint8Array(await file.arrayBuffer());
+      const loadingTask = pdfjs.getDocument({
+        data: sourceBytes,
+        disableFontFace: true,
+        useSystemFonts: true,
+        isEvalSupported: false
+      });
+
+      const sourcePdf = await loadingTask.promise;
+      const outputPdf = await window.PDFLib.PDFDocument.create();
+      const scale = attempt.dpi / 72;
+
+      try {
+        for (let pageNumber = 1; pageNumber <= sourcePdf.numPages; pageNumber += 1) {
+          const page = await sourcePdf.getPage(pageNumber);
+          const baseViewport = page.getViewport({ scale: 1 });
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d', { alpha: false });
+
+          if (!context) {
+            throw new Error('Canvas do navegador nao esta disponivel para compactar PDF.');
+          }
+
+          canvas.width = Math.max(1, Math.round(viewport.width));
+          canvas.height = Math.max(1, Math.round(viewport.height));
+          context.fillStyle = '#fff';
+          context.fillRect(0, 0, canvas.width, canvas.height);
+
+          await page.render({
+            canvasContext: context,
+            viewport
+          }).promise;
+
+          const jpgBytes = await canvasToJpegBytes(canvas, attempt.quality);
+          const jpg = await outputPdf.embedJpg(jpgBytes);
+          const outputPage = outputPdf.addPage([baseViewport.width, baseViewport.height]);
+          outputPage.drawImage(jpg, {
+            x: 0,
+            y: 0,
+            width: baseViewport.width,
+            height: baseViewport.height
+          });
+
+          page.cleanup?.();
+          canvas.width = 0;
+          canvas.height = 0;
+        }
+
+        return await outputPdf.save({
+          useObjectStreams: true
+        });
+      } finally {
+        await sourcePdf.destroy?.();
+      }
+    };
+
+    const compressPdfUnderLimit = async (file, onAttempt) => {
+      let smallest = null;
+      let smallestAttempt = null;
+
+      for (const attempt of PDF_COMPRESSION_ATTEMPTS) {
+        onAttempt?.(attempt);
+        const bytes = await renderPdfAsImagePdf(file, attempt);
+
+        if (!smallest || bytes.length < smallest.length) {
+          smallest = bytes;
+          smallestAttempt = attempt;
+        }
+
+        if (bytes.length <= MAX_DOC_BYTES) {
+          return {
+            file: new File([bytes], makeCompressedPdfName(file.name), { type: 'application/pdf' }),
+            bytes,
+            attempt
+          };
+        }
+      }
+
+      const size = smallest ? formatBytes(smallest.length) : 'desconhecido';
+      const detail = smallestAttempt ? ` (${smallestAttempt.dpi} dpi)` : '';
+      throw new Error(`Nao consegui compactar "${file.name}" abaixo de 1 MB. Menor resultado: ${size}${detail}.`);
     };
 
     const toast = (msg, ms = 3800) => {
@@ -860,7 +999,9 @@
         name.textContent = `${index + 1}. ${item.name}`;
         const meta = document.createElement('span');
         meta.className = `${EXT}-meta`;
-        meta.textContent = `${Math.max(1, Math.round(item.size / 1024))} KB`;
+        meta.textContent = item.compressed
+          ? `Compactado: ${formatBytes(item.originalSize)} -> ${formatBytes(item.size)} (${item.compressionDpi} dpi)`
+          : formatBytes(item.size);
         name.appendChild(meta);
 
         const reorder = document.createElement('div');
@@ -1168,7 +1309,9 @@
         name.textContent = `${index + 1}. ${item.name}`;
         const meta = document.createElement('span');
         meta.className = `${EXT}-meta`;
-        meta.textContent = `${Math.max(1, Math.round(item.size / 1024))} KB`;
+        meta.textContent = item.compressed
+          ? `Compactado: ${formatBytes(item.originalSize)} -> ${formatBytes(item.size)} (${item.compressionDpi} dpi)`
+          : formatBytes(item.size);
         name.appendChild(meta);
 
         const reorder = document.createElement('div');
@@ -1328,6 +1471,12 @@
         meta.className = `${EXT}-meta`;
         meta.textContent = item.documentText || 'Sem tipo';
         name.appendChild(meta);
+        const size = document.createElement('span');
+        size.className = `${EXT}-meta`;
+        size.textContent = item.compressed
+          ? `Compactado: ${formatBytes(item.originalSize)} -> ${formatBytes(item.size)} (${item.compressionDpi} dpi)`
+          : formatBytes(item.size);
+        name.appendChild(size);
         if (item.complement) {
           const complement = document.createElement('span');
           complement.className = `${EXT}-meta`;
@@ -1953,19 +2102,24 @@
       };
     };
 
-    const createDocsDraftBatch = (files, docOptions) => {
+    const createDocsDraftBatch = (docs, docOptions) => {
       const id = `docs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       return {
         id,
         kind: 'docs',
         createdAt: Date.now(),
         running: false,
-        items: files.map((file, index) => ({
+        items: docs.map((doc, index) => ({
           id: `${id}-${index}`,
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          lastModified: file.lastModified,
+          name: doc.file.name,
+          type: doc.file.type,
+          size: doc.file.size,
+          lastModified: doc.file.lastModified,
+          originalName: doc.originalName || doc.file.name,
+          originalSize: doc.originalSize || doc.file.size,
+          compressed: !!doc.compressed,
+          compressionDpi: doc.compressionDpi || null,
+          compressionQuality: doc.compressionQuality || null,
           documentValue: docOptions.length === 1 ? docOptions[0].value : '',
           documentText: docOptions.length === 1 ? docOptions[0].text : '',
           complement: '',
@@ -2019,9 +2173,47 @@
         return;
       }
 
+      const preparedDocs = [];
+
+      for (const file of files) {
+        if (file.size <= MAX_DOC_BYTES) {
+          preparedDocs.push({
+            file,
+            originalName: file.name,
+            originalSize: file.size,
+            compressed: false
+          });
+          continue;
+        }
+
+        if (!isPdfFile(file)) {
+          throw new Error(`"${file.name}" tem ${formatBytes(file.size)} e nao e PDF. A extensao so compacta PDFs automaticamente.`);
+        }
+
+        toast(`Compactando PDF maior que 1 MB:\n${file.name}\nTamanho original: ${formatBytes(file.size)}`, 8000);
+
+        const compressed = await compressPdfUnderLimit(file, (attempt) => {
+          toast(`Compactando ${file.name}\nTentativa: ${attempt.dpi} dpi`, 8000);
+        });
+
+        preparedDocs.push({
+          file: compressed.file,
+          originalName: file.name,
+          originalSize: file.size,
+          compressed: true,
+          compressionDpi: compressed.attempt.dpi,
+          compressionQuality: compressed.attempt.quality
+        });
+
+        toast(
+          `PDF compactado:\n${file.name}\n${formatBytes(file.size)} -> ${formatBytes(compressed.file.size)}`,
+          5000
+        );
+      }
+
       const filesById = new Map();
-      const batch = createDocsDraftBatch(files, docOptions);
-      batch.items.forEach((item, index) => filesById.set(item.id, files[index]));
+      const batch = createDocsDraftBatch(preparedDocs, docOptions);
+      batch.items.forEach((item, index) => filesById.set(item.id, preparedDocs[index].file));
       renderDocsDraftModal(batch, filesById, docOptions);
     };
 
