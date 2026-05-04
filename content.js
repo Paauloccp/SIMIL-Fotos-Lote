@@ -54,6 +54,9 @@
         .replace(/\s+/g, ' ')
         .trim();
 
+    const referenceDescription = (text) =>
+      String(text || '').trim().toLocaleUpperCase('pt-BR');
+
     const formatBytes = (bytes) => {
       const value = Number(bytes || 0);
       if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(2)} MB`;
@@ -964,10 +967,20 @@
         batch.items.forEach(item => {
           item.referenceValue = value;
           item.referenceText = text;
+          item.description = referenceDescription(text);
         });
         renderDraftModal(batch, filesById, referenceOptions);
       });
       toolbar.appendChild(applyRef);
+
+      const refDescBtn = createButton('Usar referencia nas descricoes');
+      refDescBtn.addEventListener('click', () => {
+        batch.items.forEach(item => {
+          if (item.referenceText) item.description = referenceDescription(item.referenceText);
+        });
+        renderDraftModal(batch, filesById, referenceOptions);
+      });
+      toolbar.appendChild(refDescBtn);
 
       const namesBtn = createButton('Usar nome dos arquivos');
       namesBtn.addEventListener('click', () => {
@@ -1035,6 +1048,8 @@
         refSelect.addEventListener('change', () => {
           item.referenceValue = refSelect.value;
           item.referenceText = refSelect.selectedOptions[0]?.textContent?.trim() || '';
+          item.description = referenceDescription(item.referenceText);
+          desc.value = item.description;
         });
         refWrap.appendChild(refSelect);
         row.appendChild(refWrap);
